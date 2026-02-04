@@ -1,0 +1,22 @@
+# Core language & utilities
+numpy
+torch
+
+# PDF processing
+pymupdf
+pdfplumber
+pillow
+pytesseract
+
+# NLP & text processing
+spacy
+sentence-transformers
+
+# Vector search
+faiss-cpu
+
+# DOCX handling
+python-docx
+
+# UI
+streamlit
