@@ -1,75 +1,86 @@
-from typing import List, Dict
+import re
+from typing import Dict
 from docx import Document
 from docx.shared import Pt
+
+from backend.citation_engine import CitationEngine
+from backend.bibliography_builder import BibliographyBuilder
 
 
 class DocxHandler:
     """
-    Handles reading and writing of Word documents:
-    - Extracts text
-    - Inserts in-text citations
-    - Appends bibliography
+    Handles final DOCX processing:
+    - Replace citation markers with formatted citations
+    - Append bibliography section
     """
 
-    def __init__(self, citation_style: str = "APA"):
-        self.citation_style = citation_style
+    CITE_PATTERN = re.compile(r"\[CITE:\s*(.*?)\s*\|\s*(.*?)\]")
 
-    # --------------------------------------------------
-    # READ
-    # --------------------------------------------------
-    def extract_paragraphs(self, docx_path: str) -> List[str]:
-        """
-        Extract paragraphs from a DOCX file.
-        """
-        document = Document(docx_path)
-        paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
-        return paragraphs
-
-    # --------------------------------------------------
-    # WRITE
-    # --------------------------------------------------
-    def insert_citations(
+    def finalize_document(
         self,
         input_docx: str,
         output_docx: str,
-        citation_map: Dict[int, str],
-        bibliography_entries: List[str]
+        reference_metadata: Dict[str, Dict],
+        citation_style: str = "APA"
     ):
-        """
-        Insert citations into the document and append bibliography.
-
-        citation_map:
-        {
-            paragraph_index: "(Smith et al., 2021)"
-        }
-        """
         document = Document(input_docx)
 
-        # Insert in-text citations
-        for idx, paragraph in enumerate(document.paragraphs):
-            if idx in citation_map:
-                citation_text = citation_map[idx]
-                run = paragraph.add_run(f" {citation_text}")
-                run.font.size = Pt(11)
+        citation_engine = CitationEngine(style=citation_style)
+        bibliography_builder = BibliographyBuilder(style=citation_style)
 
-        # Append bibliography
-        self._append_bibliography(document, bibliography_entries)
+        used_references = []
+
+        # 🔹 Replace markers with formatted citations
+        for paragraph in document.paragraphs:
+            matches = list(self.CITE_PATTERN.finditer(paragraph.text))
+            if not matches:
+                continue
+
+            new_text = paragraph.text
+
+            for match in matches:
+                ref_id = match.group(1).strip()
+
+                if ref_id not in reference_metadata:
+                    continue
+
+                citation_text = citation_engine.format_in_text(
+                    ref_id, reference_metadata[ref_id]
+                )
+
+                new_text = new_text.replace(match.group(0), citation_text)
+
+                if ref_id not in used_references:
+                    used_references.append(ref_id)
+
+            paragraph.clear()
+            run = paragraph.add_run(new_text)
+            run.font.size = Pt(11)
+
+        # 🔹 Append bibliography
+        self._append_bibliography(
+            document,
+            used_references,
+            reference_metadata,
+            bibliography_builder
+        )
 
         document.save(output_docx)
 
-    # --------------------------------------------------
-    # HELPERS
-    # --------------------------------------------------
-    def _append_bibliography(self, document: Document, entries: List[str]):
-        """
-        Add bibliography section at the end of the document.
-        """
+    def _append_bibliography(
+        self,
+        document: Document,
+        used_references,
+        reference_metadata,
+        bibliography_builder
+    ):
         document.add_page_break()
+        document.add_heading("References", level=1)
 
-        heading = document.add_heading("References", level=1)
-        heading.alignment = 0  # left align
+        for idx, ref_id in enumerate(used_references, start=1):
+            metadata = reference_metadata[ref_id].copy()
+            metadata["index"] = idx
 
-        for entry in entries:
+            entry = bibliography_builder.build_entry(ref_id, metadata)
             p = document.add_paragraph(entry)
             p.paragraph_format.space_after = Pt(6)
-            p.paragraph_format.left_indent = Pt(18)
