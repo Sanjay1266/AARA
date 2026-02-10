@@ -1,5 +1,5 @@
 import re
-from typing import Dict
+from typing import Dict, List
 from docx import Document
 from docx.shared import Pt
 
@@ -9,13 +9,48 @@ from backend.bibliography_builder import BibliographyBuilder
 
 class DocxHandler:
     """
-    Handles final DOCX processing:
-    - Replace citation markers with formatted citations
-    - Append bibliography section
+    Handles all DOCX operations:
+    - Reading paragraphs
+    - Inserting citation markers
+    - Finalizing document with real citations + bibliography
     """
 
     CITE_PATTERN = re.compile(r"\[CITE:\s*(.*?)\s*\|\s*(.*?)\]")
 
+    # -----------------------------
+    # READ
+    # -----------------------------
+    def read_paragraphs(self, docx_path: str) -> List[str]:
+        document = Document(docx_path)
+        return [p.text.strip() for p in document.paragraphs if p.text.strip()]
+
+    # -----------------------------
+    # WRITE (Markers)
+    # -----------------------------
+    def insert_citation_markers(
+        self,
+        input_docx: str,
+        output_docx: str,
+        citation_decisions: Dict[int, Dict]
+    ):
+        document = Document(input_docx)
+
+        for idx, paragraph in enumerate(document.paragraphs):
+            if idx not in citation_decisions:
+                continue
+
+            decision = citation_decisions[idx]
+            if not decision.get("citation_required"):
+                continue
+
+            marker = f" [CITE: {decision['reference_id']} | {decision['confidence_score']}]"
+            paragraph.add_run(marker)
+
+        document.save(output_docx)
+
+    # -----------------------------
+    # FINALIZE
+    # -----------------------------
     def finalize_document(
         self,
         input_docx: str,
@@ -28,9 +63,8 @@ class DocxHandler:
         citation_engine = CitationEngine(style=citation_style)
         bibliography_builder = BibliographyBuilder(style=citation_style)
 
-        used_references = []
+        used_refs = []
 
-        # 🔹 Replace markers with formatted citations
         for paragraph in document.paragraphs:
             matches = list(self.CITE_PATTERN.finditer(paragraph.text))
             if not matches:
@@ -40,47 +74,51 @@ class DocxHandler:
 
             for match in matches:
                 ref_id = match.group(1).strip()
-
                 if ref_id not in reference_metadata:
                     continue
 
-                citation_text = citation_engine.format_in_text(
+                citation = citation_engine.format_in_text(
                     ref_id, reference_metadata[ref_id]
                 )
 
-                new_text = new_text.replace(match.group(0), citation_text)
+                new_text = new_text.replace(match.group(0), citation)
 
-                if ref_id not in used_references:
-                    used_references.append(ref_id)
+                if ref_id not in used_refs:
+                    used_refs.append(ref_id)
 
             paragraph.clear()
             run = paragraph.add_run(new_text)
             run.font.size = Pt(11)
 
-        # 🔹 Append bibliography
         self._append_bibliography(
-            document,
-            used_references,
-            reference_metadata,
-            bibliography_builder
+            document, used_refs, reference_metadata, bibliography_builder
         )
 
         document.save(output_docx)
 
+    # -----------------------------
+    # HELPERS
+    # -----------------------------
     def _append_bibliography(
         self,
         document: Document,
-        used_references,
+        used_refs,
         reference_metadata,
         bibliography_builder
     ):
         document.add_page_break()
-        document.add_heading("References", level=1)
 
-        for idx, ref_id in enumerate(used_references, start=1):
-            metadata = reference_metadata[ref_id].copy()
-            metadata["index"] = idx
+        # SAFE heading insertion
+        try:
+            document.add_heading("References", level=1)
+        except KeyError:
+            p = document.add_paragraph("References")
+            p.runs[0].bold = True
 
-            entry = bibliography_builder.build_entry(ref_id, metadata)
+        for i, ref_id in enumerate(used_refs, start=1):
+            meta = reference_metadata[ref_id].copy()
+            meta["index"] = i
+
+            entry = bibliography_builder.build_entry(ref_id, meta)
             p = document.add_paragraph(entry)
             p.paragraph_format.space_after = Pt(6)
